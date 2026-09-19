@@ -873,65 +873,108 @@ function calcTradeLevels(candles, sig, sr) {
 
 // ─── MARKET STRUCTURE (SMC) ───────────────────────────────────────────
 function detectStructure(candles) {
-  const empty = { swings:[], trend:'NEUTRAL', events:[], lastHigh:null, lastLow:null, idm:null };
+  const empty = { swings:[], minorSwings:[], trend:'NEUTRAL', events:[], lastHigh:null, lastLow:null, idm:null };
   if (candles.length < 20) return empty;
-  const hi = candles.map(c => c.high), lo = candles.map(c => c.low);
-  const LB = 3, raw = [];
+
+  const hi = candles.map(c => c.high);
+  const lo = candles.map(c => c.low);
+
+  const LB = 2;
+  const rawSwings = [];
   for (let i = LB; i < candles.length - LB; i++) {
     const isSH = hi.slice(i-LB, i).every(v => v <= hi[i]) && hi.slice(i+1, i+LB+1).every(v => v <= hi[i]);
     const isSL = lo.slice(i-LB, i).every(v => v >= lo[i]) && lo.slice(i+1, i+LB+1).every(v => v >= lo[i]);
-    if (isSH) raw.push({ i, price: hi[i], type: 'high' });
-    if (isSL) raw.push({ i, price: lo[i], type: 'low' });
+    if (isSH) rawSwings.push({ i, price: hi[i], type: 'high' });
+    if (isSL) rawSwings.push({ i, price: lo[i], type: 'low' });
   }
-  raw.sort((a,b) => a.i - b.i);
-  if (!raw.length) return empty;
+  rawSwings.sort((a,b) => a.i - b.i);
+  if (!rawSwings.length) return empty;
 
-  let ph = null, pl = null;
-  const swings = raw.map(s => {
-    if (s.type === 'high') {
-      const l = ph === null ? 'H' : s.price > ph ? 'HH' : 'LH';
-      ph = s.price;
-      return { ...s, label: l };
-    } else {
-      const l = pl === null ? 'L' : s.price > pl ? 'HL' : 'LL';
-      pl = s.price;
-      return { ...s, label: l };
-    }
-  });
-
-  let trend = 'NEUTRAL', sH = null, sL = null, pMH = null, pML = null, cp = null, mp = null;
+  let majorHigh = null, majorLow = null;
+  let trend = 'NEUTRAL';
+  let chochPending = null;
   const events = [];
+  const structureSwings = [];
+  const minorSwings = [];
+  let lastMinorPullback = null;
 
-  swings.forEach(s => {
+  rawSwings.forEach(s => {
     if (s.type === 'high') {
-      if (sH === null) sH = s.price;
-      else if (s.price > sH) {
+      if (majorHigh === null) {
+        majorHigh = s.price;
+        structureSwings.push({ ...s, label: 'H' });
+      } else if (s.price > majorHigh) {
         if (trend === 'DOWN') {
-          if (!cp || cp.dir !== 'BULLISH') { events.push({ i:s.i, price:s.price, dir:'BULLISH', label:'CHoCH' }); cp = { dir:'BULLISH', priorLevel:pMH }; }
-          if (cp && cp.dir === 'BULLISH' && cp.priorLevel && s.price > cp.priorLevel) { events.push({ i:s.i, price:s.price, dir:'BULLISH', label:'MSS' }); cp = null; }
-          trend = 'UP'; pMH = sH; sH = s.price;
+          events.push({ i:s.i, price:s.price, dir:'BULLISH', label:'CHoCH' });
+          if (chochPending && chochPending.dir === 'BULLISH' && chochPending.priorLevel && s.price > chochPending.priorLevel) {
+            events.push({ i:s.i, price:s.price, dir:'BULLISH', label:'MSS' });
+            chochPending = null;
+          }
+          chochPending = { dir:'BULLISH', priorLevel: majorHigh };
+          trend = 'UP';
         } else if (trend === 'UP') {
           events.push({ i:s.i, price:s.price, dir:'BULLISH', label:'BOS' });
-          pMH = sH; sH = s.price;
-        } else { trend = 'UP'; pMH = sH; sH = s.price; }
-      } else if (trend === 'UP') { mp = { i:s.i, price:s.price }; }
+        } else {
+          trend = 'UP';
+        }
+        majorHigh = s.price;
+        structureSwings.push({ ...s, label: 'HH' });
+      } else {
+        minorSwings.push({ ...s, label: 'LH' });
+        if (trend === 'UP') lastMinorPullback = { i:s.i, price:s.price };
+      }
     } else {
-      if (sL === null) sL = s.price;
-      else if (s.price < sL) {
+      if (majorLow === null) {
+        majorLow = s.price;
+        structureSwings.push({ ...s, label: 'L' });
+      } else if (s.price < majorLow) {
         if (trend === 'UP') {
-          if (!cp || cp.dir !== 'BEARISH') { events.push({ i:s.i, price:s.price, dir:'BEARISH', label:'CHoCH' }); cp = { dir:'BEARISH', priorLevel:pML }; }
-          if (cp && cp.dir === 'BEARISH' && cp.priorLevel && s.price < cp.priorLevel) { events.push({ i:s.i, price:s.price, dir:'BEARISH', label:'MSS' }); cp = null; }
-          trend = 'DOWN'; pML = sL; sL = s.price;
+          events.push({ i:s.i, price:s.price, dir:'BEARISH', label:'CHoCH' });
+          if (chochPending && chochPending.dir === 'BEARISH' && chochPending.priorLevel && s.price < chochPending.priorLevel) {
+            events.push({ i:s.i, price:s.price, dir:'BEARISH', label:'MSS' });
+            chochPending = null;
+          }
+          chochPending = { dir:'BEARISH', priorLevel: majorLow };
+          trend = 'DOWN';
         } else if (trend === 'DOWN') {
           events.push({ i:s.i, price:s.price, dir:'BEARISH', label:'BOS' });
-          pML = sL; sL = s.price;
-        } else { trend = 'DOWN'; pML = sL; sL = s.price; }
-      } else if (trend === 'DOWN') { mp = { i:s.i, price:s.price }; }
+        } else {
+          trend = 'DOWN';
+        }
+        majorLow = s.price;
+        structureSwings.push({ ...s, label: 'LL' });
+      } else {
+        minorSwings.push({ ...s, label: 'HL' });
+        if (trend === 'DOWN') lastMinorPullback = { i:s.i, price:s.price };
+      }
     }
   });
 
-  const idm = mp ? { i: mp.i, price: mp.price, dir: trend === 'UP' ? 'BEARISH' : 'BULLISH' } : null;
-  return { swings, trend, events: events.slice(-12), lastHigh: sH, lastLow: sL, idm };
+  minorSwings.forEach(ms => {
+    let swept = false;
+    for (let j = ms.i + 1; j < candles.length; j++) {
+      if (ms.label === 'LH' && candles[j].high > ms.price) { swept = true; break; }
+      if (ms.label === 'HL' && candles[j].low < ms.price) { swept = true; break; }
+    }
+    ms.swept = swept;
+  });
+
+  const idm = lastMinorPullback ? {
+    i: lastMinorPullback.i,
+    price: lastMinorPullback.price,
+    dir: trend === 'UP' ? 'BEARISH' : 'BULLISH',
+    label: 'IDM'
+  } : null;
+
+  return {
+    swings: structureSwings,
+    minorSwings,
+    trend,
+    events: events.slice(-12),
+    lastHigh: majorHigh,
+    lastLow: majorLow,
+    idm,
+  };
 }
 
 // ─── FVG ──────────────────────────────────────────────────────────────
@@ -1504,6 +1547,9 @@ function updateChartData() {
     open: c.open, high: c.high, low: c.low, close: c.close,
   })));
 
+
+
+  
   // Volume with LARGE bars + colored by direction
   S.tvSeries.volumeSeries.setData(d.map(c => ({
     time: Math.floor(c.time/1000),
@@ -1592,114 +1638,32 @@ function resizeOv() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   S.overlayCtx = ctx;
 }
-
-function redrawOverlay() {
-  if (!S.tvChart || !S.overlayCtx) return;
-  const cv = $('overlayCanvas');
-  if (!cv) return;
-  const par = $('tvChart');
-  if (par) {
-    const dpr = window.devicePixelRatio || 1;
-    const pw = par.clientWidth, ph = par.clientHeight;
-    if (cv.width !== pw*dpr || cv.height !== ph*dpr) {
-      cv.width = pw*dpr;
-      cv.height = ph*dpr;
-      cv.style.width = pw + 'px';
-      cv.style.height = ph + 'px';
-      S.overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    }
-  }
-  const ctx = S.overlayCtx;
-  const w = cv.clientWidth, h = cv.clientHeight;
-  ctx.clearRect(0, 0, w, h);
-
-  const smc = S.smc[ak()], d = S.candles[ak()];
-  if (!smc || !d || !d.length) return;
-
-  const ts = S.tvChart.timeScale(), cs = S.tvSeries.candleSeries;
-  const tX = t => {
-    const x = ts.timeToCoordinate(Math.floor(t/1000));
-    return x === null ? null : x;
-  };
-  const tY = p => {
-    const y = cs.priceToCoordinate(p);
-    return y === null ? null : y;
-  };
-
-  // FVG boxes
-  smc.fvgs.forEach(f => {
-    const sc = d[f.i];
-    if (!sc) return;
-    const x1 = tX(sc.time), x2 = tX(d[d.length - 1].time);
-    const yT = tY(Math.max(f.top, f.bottom)), yB = tY(Math.min(f.top, f.bottom));
-    if (x1 == null || x2 == null || yT == null || yB == null) return;
-    if (x2 < 0 || x1 > w) return;
-    const bull = f.dir === 'BULLISH';
-    ctx.fillStyle = bull ? 'rgba(16,185,129,.08)' : 'rgba(239,68,68,.08)';
-    ctx.fillRect(x1, yT, x2 - x1, yB - yT);
-    ctx.strokeStyle = bull ? 'rgba(16,185,129,.4)' : 'rgba(239,68,68,.4)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([3, 3]);
-    ctx.strokeRect(x1, yT, x2 - x1, yB - yT);
-    ctx.setLineDash([]);
-  });
-
-  // Swing labels
-  smc.structure.swings.forEach(sw => {
-    const c = d[sw.i];
-    if (!c) return;
-    const x = tX(c.time);
-    if (x == null || x < -30 || x > w + 30) return;
-    const isH = sw.type === 'high';
-    const y = tY(isH ? c.high : c.low);
-    if (y == null) return;
-    const bull = sw.label === 'HH' || sw.label === 'HL';
-    ctx.font = 'bold 9px JetBrains Mono';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = bull ? 'rgba(16,185,129,.9)' : 'rgba(239,68,68,.9)';
-    ctx.fillText(sw.label, x, isH ? y - 6 : y + 14);
-  });
-
-  // BOS / CHoCH / MSS markers
-  smc.structure.events.forEach(ev => {
-    const c = d[ev.i];
+// Minor sweeps (liquidity grabs)
+if (smc.structure.minorSwings) {
+  smc.structure.minorSwings.forEach(ms => {
+    if (!ms.swept) return;
+    const c = d[ms.i];
     if (!c) return;
     const x = tX(c.time);
     if (x == null || x < -40 || x > w + 40) return;
-    const y = tY(ev.price);
+    const y = tY(ms.price);
     if (y == null) return;
-    const bull = ev.dir === 'BULLISH';
-    const col = bull ? '#10b981' : '#ef4444';
-    ctx.fillStyle = col;
+    ctx.fillStyle = 'rgba(245,158,11,.7)';
     ctx.beginPath();
-    if (bull) {
-      ctx.moveTo(x, y - 6);
-      ctx.lineTo(x - 5, y - 14);
-      ctx.lineTo(x + 5, y - 14);
-    } else {
-      ctx.moveTo(x, y + 6);
-      ctx.lineTo(x - 5, y + 14);
-      ctx.lineTo(x + 5, y + 14);
-    }
+    ctx.moveTo(x, y - 5);
+    ctx.lineTo(x + 5, y);
+    ctx.lineTo(x, y + 5);
+    ctx.lineTo(x - 5, y);
     ctx.closePath();
     ctx.fill();
-    ctx.font = 'bold 9px JetBrains Mono';
-    const lbl = ev.label;
-    const tw = ctx.measureText(lbl).width + 8;
-    const lx = Math.min(Math.max(x - tw/2, 2), w - tw - 2);
-    const ly = bull ? y - 30 : y + 18;
-    ctx.fillStyle = col + '33';
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 1;
-    roundRect(ctx, lx, ly, tw, 13, 3);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = col;
+    ctx.font = 'bold 8px JetBrains Mono';
     ctx.textAlign = 'center';
-    ctx.fillText(lbl, x, ly + 9.5);
+    ctx.fillStyle = 'rgba(245,158,11,.9)';
+    ctx.fillText('SWEEP', x, ms.label === 'LH' ? y - 10 : y + 16);
   });
 }
-
+  }
+  
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
